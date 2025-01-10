@@ -93,7 +93,7 @@ def main():
 
     # Master password authentication
     master_password = input("Enter master password: ")
-    if master_password != "your_master_password":  # Replace with a secure master password
+    if master_password != "masterpass":  # Replace with a secure master password
         print("Incorrect master password. Exiting...")
         return
 
