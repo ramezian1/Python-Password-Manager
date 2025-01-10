@@ -1,4 +1,4 @@
-# Password Manager 🔐
+# Python Script - Password Manager 🔐
 
 This Python-based password manager helps users securely save, store, and encrypt passwords. The application uses **Fernet** encryption to ensure that your passwords are protected.
 
