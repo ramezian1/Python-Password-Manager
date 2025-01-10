@@ -1,52 +1,67 @@
-# Password Manager
+# Password Manager 🔐
 
-A **Python Password Manager** designed to help users securely save, store, and encrypt their passwords. This script provides an easy-to-use interface for managing sensitive credentials, ensuring they are protected with robust encryption techniques.
+This Python-based password manager helps users securely save, store, and encrypt passwords. The application uses **Fernet** encryption to ensure that your passwords are protected.
 
-## Features
-- 🔒 **Secure Password Storage**: Save and organize your passwords in an encrypted database.
-- 🛡️ **AES Encryption**: Protect your data using the Advanced Encryption Standard (AES) for industry-standard security.
-- 🔑 **User Authentication**: Access your password vault with a master password for added protection.
-- 📂 **Password Retrieval**: Easily retrieve stored passwords when needed.
-- 💻 **Cross-Platform**: Works on Windows, macOS, and Linux.
+## Features ✨
 
-## Requirements
-- **Python 3.8 or later**: Make sure Python is installed on your system. [Download Python here](https://www.python.org/downloads/).
-- **An IDE or Text Editor**: Use any IDE or text editor of your choice (e.g., PyCharm, VS Code, Sublime Text).
-- **pip**: Ensure pip is installed to manage dependencies. It typically comes with Python installations and adds to your PATH automatically.
+- **Add Password**: Securely store a password for a specific username.
+- **Check Password**: Verify if a given password matches the stored encrypted password.
+- **Find Password**: Retrieve the encrypted password for a given username.
+- **Delete Password**: Remove a stored password for a given username.
+- **Master Password**: Requires entering a master password to authenticate and access the password manager.
 
-## Technologies Used
-- **Python**: Core programming language.
-- **Cryptography Library**: For implementing encryption and decryption.
-- **SQLite**: Lightweight database for storing encrypted credentials.
+## Requirements 📋
 
-## How to Use
-1. Clone the repository:
+- **Python**: Ensure Python is installed on your system.
+- **IDE**: You can use any IDE, such as PyCharm, VS Code, or even a simple text editor to edit the script.
+
+## Installation ⚙️
+
+1. Clone or download this repository to your local machine.
+2. Install the required Python libraries by running:
    ```bash
-   git clone https://github.com/<your-username>/<repo-name>.git
-   ```
-2. Install required dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Run the script:
-   ```bash
-   python password_manager.py
+   pip install cryptography
    ```
 
-## Future Enhancements
-- 🖥️ Integration with a GUI for improved usability.
-- 🛠️ Password strength checker.
-- 🔄 Automatic password generation.
+## How to Use 🚀
 
-## Contribute
-Feel free to fork the repository and submit pull requests for new features or improvements.
+1. **Run the Script**: 
+   Execute the script in your terminal or IDE.
+
+2. **Enter Master Password**: 
+   Upon running the script, you will be prompted to enter the master password to authenticate yourself. Replace the placeholder `"your_master_password"` with a strong, secure password in the script.
+   
+   Example:
+   ```python
+   master_password = input("Enter master password: ")
+   if master_password != "masterpass":  # Replace with your chosen strong password
+       print("Incorrect master password. Exiting...")
+       return
+   ```
+
+3. **Menu Options**:
+   After successful authentication, the menu will appear with the following options:
+   - **1. Add password**: Add a new password for a username.
+   - **2. Check password**: Verify if the password entered matches the stored password.
+   - **3. Find password**: Retrieve the encrypted password for a specific username.
+   - **4. Delete password**: Delete the password for a specific username.
+   - **5. Exit**: Exit the application.
+
+4. **Password Storage**:
+   - Passwords are encrypted using **Fernet** encryption.
+   - The secret key is stored in a file (`secret.key`) to persist across program runs.
+   - Passwords are stored in a file (`passwords.txt`).
+
+## Security 🔒
+
+- **Master Password**: The master password is used to authenticate and access the password manager. Ensure this password is strong and unique.
+- **Encryption**: All passwords are encrypted using **Fernet** encryption for secure storage.
+
+## License 📜
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
-⭐ **If you find this project helpful, please consider giving it a star!**
-
----
-
-### Author
-All code for this project was written by **Robert Mezian**.
+All code was written by Robert Mezian.
 ```
