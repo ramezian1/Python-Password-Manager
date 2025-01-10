@@ -29,7 +29,8 @@ This Python-based password manager helps users securely save, store, and encrypt
    Execute the script in your terminal or IDE.
 
 2. **Enter Master Password**: 
-   Upon running the script, you will be prompted to enter the master password to authenticate yourself. Replace the placeholder `"your_master_password"` with a strong, secure password in the script.
+   Upon running the script, you will be prompted to enter the master password to authenticate yourself. Replace the placeholder `"masterpass"` with a strong, secure password in the script, or keep as `"masterpass"`.
+   NOTE: Upon running script, a "secret.key" file will be created. This will ensure that your passwords are safely stored in a file (see step 5).
    
    Example:
    ```python
@@ -39,7 +40,7 @@ This Python-based password manager helps users securely save, store, and encrypt
        return
    ```
 
-3. **Menu Options**:
+4. **Menu Options**:
    After successful authentication, the menu will appear with the following options:
    - **1. Add password**: Add a new password for a username.
    - **2. Check password**: Verify if the password entered matches the stored password.
@@ -47,7 +48,7 @@ This Python-based password manager helps users securely save, store, and encrypt
    - **4. Delete password**: Delete the password for a specific username.
    - **5. Exit**: Exit the application.
 
-4. **Password Storage**:
+5. **Password Storage**:
    - Passwords are encrypted using **Fernet** encryption.
    - The secret key is stored in a file (`secret.key`) to persist across program runs.
    - Passwords are stored in a file (`passwords.txt`).
