@@ -65,4 +65,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 All code was written by Robert Mezian.
-```
