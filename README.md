@@ -72,7 +72,7 @@ This Python-based password manager helps users securely save, store, generate, a
 
 ## License 📜
 
-This project is licensed under the MIT License - see the LICENSE file for details (if applicable).
+This project is licensed under the MIT License - see the [LICENSE](Python-Password-Manager/LICENSE) for more.
 
 ---
 
