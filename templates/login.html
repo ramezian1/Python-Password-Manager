@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+{% block title %}Login | Password Manager{% endblock %}
+{% block content %}
+<div class="auth-card">
+  <h1>&#128274; Unlock Vault</h1>
+  <p class="subtitle">Enter your master password to continue.</p>
+  <form method="POST">
+    <div class="form-group">
+      <label for="password">Master Password</label>
+      <input type="password" id="password" name="password" placeholder="Enter master password" required autofocus />
+    </div>
+    <button type="submit" class="btn btn-primary btn-full">Unlock</button>
+  </form>
+</div>
+{% endblock %}
