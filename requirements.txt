@@ -1,0 +1,5 @@
+# Core encryption
+cryptography>=42.0.0
+
+# Clipboard support
+pyperclip>=1.8.2
