@@ -3,3 +3,6 @@ cryptography>=42.0.0
 
 # Clipboard support
 pyperclip>=1.8.2
+
+# Web interface
+flask>=3.0.0
