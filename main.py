@@ -1,296 +1,343 @@
 import os
 import re
+import hashlib
+import secrets
+import string
+import getpass
+import pyperclip
 from cryptography.fernet import Fernet
-import secrets  # <-- Import secrets module
-import string   # <-- Import string module
 
+# ---------------------------------------------------------------------------
+# File paths
+# ---------------------------------------------------------------------------
+KEY_FILE = "secret.key"
+PASSWORDS_FILE = "passwords.txt"
+MASTER_HASH_FILE = "master.hash"
+
+
+# ---------------------------------------------------------------------------
+# Key management
+# ---------------------------------------------------------------------------
 
 def generate_key():
-    """Generates a secret key and stores it in a file."""
-    if not os.path.exists("secret.key"):
+    """Load or generate the Fernet encryption key."""
+    if not os.path.exists(KEY_FILE):
         secret_key = Fernet.generate_key()
-        with open("secret.key", "wb") as key_file:
-            key_file.write(secret_key)
+        with open(KEY_FILE, "wb") as f:
+            f.write(secret_key)
     else:
-        with open("secret.key", "rb") as key_file:
-            secret_key = key_file.read()
+        with open(KEY_FILE, "rb") as f:
+            secret_key = f.read()
     return secret_key
 
 
-def encrypt_password(password, secret_key):
-    """Encrypts a password using Fernet encryption with a given secret key."""
-    cipher = Fernet(secret_key)
-    encrypted_password = cipher.encrypt(password.encode())
-    # Return as bytes, Fernet expects bytes for decryption
-    return encrypted_password
+# ---------------------------------------------------------------------------
+# Master password  (hashed with SHA-256, never stored in plain text)
+# ---------------------------------------------------------------------------
+
+def hash_password(password: str) -> str:
+    """Return a hex SHA-256 digest of the given password."""
+    return hashlib.sha256(password.encode()).hexdigest()
 
 
-def decrypt_password(encrypted_password_bytes, secret_key):
-    """Decrypts an encrypted password using Fernet encryption with a given secret key."""
-    cipher = Fernet(secret_key)
-    # Ensure input is bytes
-    if isinstance(encrypted_password_bytes, str):
-        encrypted_password_bytes = encrypted_password_bytes.encode()
-    decrypted_password = cipher.decrypt(encrypted_password_bytes)
-    return decrypted_password.decode()
-
-
-def save_encrypted_password(username, password, secret_key):
-    """Saves an encrypted password to a file."""
-    encrypted_password_bytes = encrypt_password(password, secret_key)
-    # Store the base64 representation of the bytes as string
-    encrypted_password_str = encrypted_password_bytes.decode('utf-8')
-
-    # Create or open the password file
-    file_path = "passwords.txt"
-    with open(file_path, "a+") as f:
-        f.write(f"{username}:{encrypted_password_str}\n")
-
-
-def check_password(username, password_to_check, secret_key):
-    """Checks if a given password matches the stored encrypted password."""
-    try:
-        with open("passwords.txt", "r") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                try:
-                    username_stored, encrypted_password_stored_str = line.strip().split(":", 1)
-                    if username == username_stored:
-                        # Decrypt the stored password (string -> bytes -> decrypt -> string)
-                        decrypted_stored_password = decrypt_password(encrypted_password_stored_str.encode('utf-8'), secret_key)
-                        # Compare with the password provided by the user
-                        if decrypted_stored_password == password_to_check:
-                            return True
-                        else:
-                            # Found the user, but password doesn't match
-                            return False
-                except ValueError:
-                    print(f"Warning: Skipping malformed line in passwords.txt: {line.strip()}")
-                    continue
-                except Exception as e:
-                    print(f"Error processing line for user {username_stored}: {e}")
-                    return False # Indicate an error or uncertainty
-        # Username not found in the file
-        return False
-    except FileNotFoundError:
-        print("Password file not found.")
-        return False
-
-
-def find_password(username, secret_key):
-    """Finds the encrypted password for a given username and decrypts it."""
-    try:
-        with open("passwords.txt", "r") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                try:
-                    username_stored, encrypted_password_stored_str = line.strip().split(":", 1)
-                    if username == username_stored:
-                         # Decrypt and return
-                        decrypted_password = decrypt_password(encrypted_password_stored_str.encode('utf-8'), secret_key)
-                        # Return the decrypted password string
-                        return decrypted_password
-                except ValueError:
-                    print(f"Warning: Skipping malformed line in passwords.txt: {line.strip()}")
-                    continue
-                except Exception as e:
-                     print(f"Error processing line for user {username_stored}: {e}")
-                     return None # Indicate an error
-        # Username not found
-        return None
-    except FileNotFoundError:
-        print("Password file not found.")
-        return None
-
-
-def delete_password(username):
-    """Deletes the password for a given username."""
-    temp_file_path = "temp.txt"
-    original_file_path = "passwords.txt"
-    found = False
-    try:
-        with open(original_file_path, "r") as f, open(temp_file_path, "w") as temp:
-            for line in f:
-                if not line.strip(): # Skip empty lines
-                    temp.write(line)
-                    continue
-                try:
-                    username_stored, _ = line.strip().split(":", 1)
-                    if username != username_stored:
-                        temp.write(line) # Keep lines for other users
-                    else:
-                        found = True # Mark that we found and skipped the user
-                except ValueError:
-                    print(f"Warning: Keeping malformed line during delete: {line.strip()}")
-                    temp.write(line) # Keep malformed lines just in case
-
-        # Replace the original file with the temporary file
-        os.remove(original_file_path)
-        os.rename(temp_file_path, original_file_path)
-        return found # Return True if deleted, False otherwise
-
-    except FileNotFoundError:
-        print(f"'{original_file_path}' not found. Nothing to delete.")
-        # Clean up temp file if it was created
-        if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
-        return False
-    except Exception as e:
-        print(f"An error occurred during deletion: {e}")
-        # Attempt cleanup
-        if os.path.exists(temp_file_path):
-             os.remove(temp_file_path)
-        return False
-
-
-def check_password_strength(password):
-    """Checks if the password meets minimum strength requirements."""
-    if len(password) < 8:
-        print("  Reason: Password is too short (minimum 8 characters).")
-        return False
-    if not re.search("[a-z]", password):
-        print("  Reason: Password needs at least one lowercase letter.")
-        return False
-    if not re.search("[A-Z]", password):
-        print("  Reason: Password needs at least one uppercase letter.")
-        return False
-    if not re.search("[0-9]", password):
-        print("  Reason: Password needs at least one number.")
-        return False
-    # Optional: check for symbols
-    # if not re.search(r"[\W_]", password): # \W matches non-alphanumeric, _ is included
-    #     print("  Reason: Password needs at least one special character.")
-    #     return False
-    return True
-
-# --- New Function ---
-def generate_secure_password(length=16):
-    """Generates a secure password meeting complexity requirements."""
-    if length < 8:
-        length = 8 # Ensure minimum length
-
-    # Define character sets
-    lowercase = string.ascii_lowercase
-    uppercase = string.ascii_uppercase
-    digits = string.digits
-    # Add symbols for stronger passwords
-    symbols = string.punctuation # !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~
-
-    # Ensure at least one character from required sets
-    password_chars = [
-        secrets.choice(lowercase),
-        secrets.choice(uppercase),
-        secrets.choice(digits),
-        secrets.choice(symbols) # Make symbols mandatory for generated ones
-    ]
-
-    # Fill the rest of the password length
-    # Combine all allowed characters
-    all_chars = lowercase + uppercase + digits + symbols
-    password_chars += [secrets.choice(all_chars) for _ in range(length - len(password_chars))]
-
-    # Shuffle the list of characters randomly
-    secrets.SystemRandom().shuffle(password_chars)
-
-    # Join the characters to form the final password string
-    return "".join(password_chars)
-# --- End New Function ---
-
-
-def main():
-    # Generate or load the secret key
-    secret_key = generate_key()
-
-    # Master password authentication (consider a more secure way than hardcoding)
-    master_password_attempt = input("Enter master password: ")
-    # Example: Store a hash of the master password instead of plain text
-    # For simplicity here, we keep the plain text comparison
-    if master_password_attempt != "masterpass":  # Replace "masterpass" with a secure master password
-        print("Incorrect master password. Exiting...")
+def setup_master_password():
+    """First-run: prompt the user to create a master password and store its hash."""
+    print("\n=== First Run: Set Up Master Password ===")
+    while True:
+        pwd = getpass.getpass("Create master password: ")
+        confirm = getpass.getpass("Confirm master password: ")
+        if pwd != confirm:
+            print("Passwords do not match. Try again.")
+            continue
+        if len(pwd) < 8:
+            print("Master password must be at least 8 characters.")
+            continue
+        with open(MASTER_HASH_FILE, "w") as f:
+            f.write(hash_password(pwd))
+        print("Master password set successfully.")
         return
 
-    while True:
-        print("\nMenu:")
-        print("1. Add password")
-        print("2. Check password")
-        print("3. Find password (Decrypt & Show)")
-        print("4. Delete password")
-        print("5. Exit")
 
-        choice_str = input("Enter your choice (1-5): ")
+def verify_master_password() -> bool:
+    """Prompt for the master password and verify it against the stored hash."""
+    attempt = getpass.getpass("Enter master password: ")
+    with open(MASTER_HASH_FILE, "r") as f:
+        stored_hash = f.read().strip()
+    return hash_password(attempt) == stored_hash
+
+
+# ---------------------------------------------------------------------------
+# Encryption helpers
+# ---------------------------------------------------------------------------
+
+def encrypt_password(password: str, secret_key: bytes) -> str:
+    """Encrypt a password and return it as a UTF-8 string."""
+    cipher = Fernet(secret_key)
+    return cipher.encrypt(password.encode()).decode("utf-8")
+
+
+def decrypt_password(encrypted_str: str, secret_key: bytes) -> str:
+    """Decrypt an encrypted password string and return plain text."""
+    cipher = Fernet(secret_key)
+    return cipher.decrypt(encrypted_str.encode("utf-8")).decode()
+
+
+# ---------------------------------------------------------------------------
+# Password strength & generation
+# ---------------------------------------------------------------------------
+
+def check_password_strength(password: str) -> bool:
+    """Return True if password meets minimum complexity requirements."""
+    if len(password) < 8:
+        print("  Reason: Too short (minimum 8 characters).")
+        return False
+    if not re.search(r"[a-z]", password):
+        print("  Reason: Needs at least one lowercase letter.")
+        return False
+    if not re.search(r"[A-Z]", password):
+        print("  Reason: Needs at least one uppercase letter.")
+        return False
+    if not re.search(r"[0-9]", password):
+        print("  Reason: Needs at least one digit.")
+        return False
+    if not re.search(r"[\W_]", password):
+        print("  Reason: Needs at least one special character.")
+        return False
+    return True
+
+
+def generate_secure_password(length: int = 16) -> str:
+    """Generate a cryptographically secure password."""
+    length = max(length, 8)
+    lower = string.ascii_lowercase
+    upper = string.ascii_uppercase
+    digits = string.digits
+    symbols = string.punctuation
+    all_chars = lower + upper + digits + symbols
+    # Guarantee at least one of each required type
+    chars = [
+        secrets.choice(lower),
+        secrets.choice(upper),
+        secrets.choice(digits),
+        secrets.choice(symbols),
+    ]
+    chars += [secrets.choice(all_chars) for _ in range(length - 4)]
+    secrets.SystemRandom().shuffle(chars)
+    return "".join(chars)
+
+
+# ---------------------------------------------------------------------------
+# Storage: each line format  =>  service:username:encrypted_password
+# ---------------------------------------------------------------------------
+
+def _load_entries():
+    """Return a list of (service, username, encrypted_password) tuples."""
+    if not os.path.exists(PASSWORDS_FILE):
+        return []
+    entries = []
+    with open(PASSWORDS_FILE, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(":", 2)
+            if len(parts) == 3:
+                entries.append(tuple(parts))
+            elif len(parts) == 2:
+                # Backwards-compat: old format username:encrypted
+                entries.append(("", parts[0], parts[1]))
+    return entries
+
+
+def _save_entries(entries):
+    """Write all entries back to the passwords file."""
+    with open(PASSWORDS_FILE, "w") as f:
+        for service, username, enc in entries:
+            f.write(f"{service}:{username}:{enc}\n")
+
+
+def add_entry(service: str, username: str, password: str, secret_key: bytes):
+    """Encrypt and save a new entry."""
+    entries = _load_entries()
+    # Check for duplicate
+    for s, u, _ in entries:
+        if s.lower() == service.lower() and u.lower() == username.lower():
+            print(f"  Entry for '{username}' at '{service}' already exists. Use Update to change it.")
+            return
+    enc = encrypt_password(password, secret_key)
+    entries.append((service, username, enc))
+    _save_entries(entries)
+    print("  Password saved securely.")
+
+
+def find_entry(service: str, username: str, secret_key: bytes):
+    """Return decrypted password for a given service+username, or None."""
+    for s, u, enc in _load_entries():
+        if s.lower() == service.lower() and u.lower() == username.lower():
+            return decrypt_password(enc, secret_key)
+    return None
+
+
+def update_entry(service: str, username: str, new_password: str, secret_key: bytes):
+    """Update the password for an existing entry."""
+    entries = _load_entries()
+    updated = False
+    new_entries = []
+    for s, u, enc in entries:
+        if s.lower() == service.lower() and u.lower() == username.lower():
+            new_entries.append((s, u, encrypt_password(new_password, secret_key)))
+            updated = True
+        else:
+            new_entries.append((s, u, enc))
+    if updated:
+        _save_entries(new_entries)
+        print("  Password updated successfully.")
+    else:
+        print("  Entry not found.")
+
+
+def delete_entry(service: str, username: str):
+    """Delete an entry for a given service+username."""
+    entries = _load_entries()
+    new_entries = [(s, u, enc) for s, u, enc in entries
+                   if not (s.lower() == service.lower() and u.lower() == username.lower())]
+    if len(new_entries) == len(entries):
+        print("  Entry not found.")
+    else:
+        _save_entries(new_entries)
+        print("  Entry deleted.")
+
+
+def list_entries():
+    """Print all stored service/username pairs (no passwords)."""
+    entries = _load_entries()
+    if not entries:
+        print("  No entries stored yet.")
+        return
+    print(f"\n  {'#':<4} {'Service':<20} {'Username'}")
+    print("  " + "-" * 44)
+    for i, (s, u, _) in enumerate(entries, 1):
+        service_display = s if s else "(none)"
+        print(f"  {i:<4} {service_display:<20} {u}")
+
+
+# ---------------------------------------------------------------------------
+# Main menu
+# ---------------------------------------------------------------------------
+
+def main():
+    # First-run setup
+    if not os.path.exists(MASTER_HASH_FILE):
+        setup_master_password()
+
+    # Authenticate
+    if not verify_master_password():
+        print("\nIncorrect master password. Exiting.")
+        return
+
+    print("\nAccess granted.")
+
+    # Load/generate encryption key
+    secret_key = generate_key()
+
+    while True:
+        print("""
+=== Password Manager ===""")
+        print("  1. Add password")
+        print("  2. Find / copy password")
+        print("  3. List all entries")
+        print("  4. Update password")
+        print("  5. Delete entry")
+        print("  6. Exit")
+
+        choice_str = input("\nChoice (1-6): ").strip()
+
         try:
             choice = int(choice_str)
         except ValueError:
-            print("Invalid input. Please enter a number.")
+            print("Invalid input. Enter a number 1-6.")
             continue
 
         if choice == 1:
-            username = input("Enter username: ")
-            # --- Modified Section ---
-            generate = input("Generate a secure password? (y/n): ").lower()
-            if generate == 'y':
-                password = generate_secure_password() # Generate password
-                print(f"Generated Password: {password}") # Show the user the password
-                # Generated password inherently meets strength requirements defined in generator
-                save_encrypted_password(username, password, secret_key)
-                print("Generated password saved securely.")
+            service = input("  Service / website (e.g. gmail.com): ").strip()
+            username = input("  Username / email: ").strip()
+            gen = input("  Generate a secure password? (y/n): ").strip().lower()
+            if gen == "y":
+                try:
+                    length = int(input("  Password length [16]: ").strip() or "16")
+                except ValueError:
+                    length = 16
+                password = generate_secure_password(length)
+                print(f"  Generated: {password}")
+                try:
+                    pyperclip.copy(password)
+                    print("  (Copied to clipboard)")
+                except Exception:
+                    pass
+                add_entry(service, username, password, secret_key)
             else:
-                password = input("Enter password manually: ") # Ask for manual input
-                if check_password_strength(password): # Check strength
-                    save_encrypted_password(username, password, secret_key)
-                    print("Password saved securely.")
+                password = getpass.getpass("  Enter password: ")
+                if check_password_strength(password):
+                    add_entry(service, username, password, secret_key)
                 else:
-                    print("Password does not meet the strength requirements. Not saved.")
-            # --- End Modified Section ---
+                    print("  Password does not meet strength requirements. Not saved.")
 
         elif choice == 2:
-            username = input("Enter username: ")
-            password = input("Enter password to check: ")
-            match = check_password(username, password, secret_key)
-            if match is True: # Explicit check for True
-                 print("Password matches.")
-            elif match is False: # Explicit check for False (means user found, but password wrong, or user not found)
-                 print("Password does not match or username not found.")
-            else: # Handles potential error cases if check_password returned None
-                 print("Could not verify password due to an error.")
+            service = input("  Service / website: ").strip()
+            username = input("  Username / email: ").strip()
+            result = find_entry(service, username, secret_key)
+            if result:
+                try:
+                    pyperclip.copy(result)
+                    print("  Password copied to clipboard (not displayed for security).")
+                except Exception:
+                    # Fallback if pyperclip unavailable
+                    print(f"  Password: {result}")
+            else:
+                print("  Entry not found.")
 
         elif choice == 3:
-            username = input("Enter username to find password for: ")
-            decrypted_password = find_password(username, secret_key)
-            if decrypted_password:
-                # Be careful about printing passwords to the screen!
-                print(f"Decrypted password for {username}: {decrypted_password}")
-            elif decrypted_password is None and os.path.exists("passwords.txt"): # Check if None was explicitly returned vs file not found
-                 print("Username not found.")
-            # No message if file didn't exist, find_password prints that
+            list_entries()
 
         elif choice == 4:
-            username = input("Enter username to delete: ")
-            if delete_password(username):
-                 print(f"Password entry for '{username}' deleted.")
+            service = input("  Service / website: ").strip()
+            username = input("  Username / email: ").strip()
+            gen = input("  Generate a new secure password? (y/n): ").strip().lower()
+            if gen == "y":
+                try:
+                    length = int(input("  Password length [16]: ").strip() or "16")
+                except ValueError:
+                    length = 16
+                new_password = generate_secure_password(length)
+                print(f"  Generated: {new_password}")
+                try:
+                    pyperclip.copy(new_password)
+                    print("  (Copied to clipboard)")
+                except Exception:
+                    pass
             else:
-                 # Message printed within delete_password if file not found
-                 # Or if user wasn't found in the file
-                 print(f"Username '{username}' not found, nothing deleted.")
-
+                new_password = getpass.getpass("  New password: ")
+                if not check_password_strength(new_password):
+                    print("  Password does not meet strength requirements. Not updated.")
+                    continue
+            update_entry(service, username, new_password, secret_key)
 
         elif choice == 5:
-            print("Exiting...")
+            service = input("  Service / website: ").strip()
+            username = input("  Username / email: ").strip()
+            confirm = input(f"  Delete entry for '{username}' at '{service}'? (yes/no): ").strip().lower()
+            if confirm == "yes":
+                delete_entry(service, username)
+            else:
+                print("  Cancelled.")
+
+        elif choice == 6:
+            print("Goodbye.")
             break
+
         else:
-            print("Invalid choice. Please enter a number between 1 and 5.")
+            print("Invalid choice. Enter a number 1-6.")
 
 
 if __name__ == "__main__":
-    # Create dummy files if they don't exist to prevent errors on first run for some functions
-    if not os.path.exists("secret.key"):
-        print("Generating secret key file...")
-        generate_key()
-    if not os.path.exists("passwords.txt"):
-        print("Creating empty password file...")
-        with open("passwords.txt", "w") as f:
-            pass # Create empty file
-
     main()
