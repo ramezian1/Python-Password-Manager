@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+{% block title %}Add Entry | Password Manager{% endblock %}
+{% block content %}
+<div class="form-page">
+  <h2>+ Add New Entry</h2>
+  <form method="POST">
+    <div class="form-group">
+      <label>Service / Website</label>
+      <input type="text" name="service" value="{{ service or '' }}" placeholder="e.g. gmail.com" required />
+    </div>
+    <div class="form-group">
+      <label>Username / Email</label>
+      <input type="text" name="username" value="{{ username or '' }}" placeholder="e.g. john@gmail.com" required />
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input type="text" name="password" id="passwordField" value="{{ generated or '' }}" placeholder="Enter or generate below" required />
+    </div>
+    <div class="gen-row">
+      <input type="number" name="length" value="16" min="8" max="64" class="input-length" />
+      <button type="submit" name="action" value="generate" class="btn btn-secondary">&#9881; Generate</button>
+    </div>
+    {% if generated %}
+    <div class="alert alert-success">Password generated! Review it above then save.</div>
+    {% endif %}
+    <div class="form-actions">
+      <button type="submit" name="action" value="save" class="btn btn-primary">Save Entry</button>
+      <a href="{{ url_for('dashboard') }}" class="btn btn-ghost">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
