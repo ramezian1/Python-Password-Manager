@@ -16,7 +16,7 @@ from main import (
 )
 
 app = Flask(__name__)
-app.secret_key = secrets.token_hex(32)
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(32))
 
 # Load encryption key once at startup
 SECRET_KEY = generate_key()
@@ -26,9 +26,9 @@ def is_authenticated():
     return session.get('authenticated') is True
 
 
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------
 # Setup: first-run master password creation via web
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------
 
 @app.route('/setup', methods=['GET', 'POST'])
 def setup():
@@ -42,16 +42,19 @@ def setup():
         elif len(pwd) < 8:
             flash('Master password must be at least 8 characters.', 'error')
         else:
-            with open(MASTER_HASH_FILE, 'w') as f:
-                f.write(hash_password(pwd))
-            flash('Master password created. Please log in.', 'success')
-            return redirect(url_for('login'))
+            ok, msg = check_password_strength(pwd)
+            if not ok:
+                flash(msg, 'error')
+            else:
+                setup_master_password(pwd)
+                flash('Master password created. Please log in.', 'success')
+                return redirect(url_for('login'))
     return render_template('setup.html')
 
 
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------
 # Login / Logout
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------
 
 @app.route('/', methods=['GET', 'POST'])
 @app.route('/login', methods=['GET', 'POST'])
@@ -62,39 +65,36 @@ def login():
         return redirect(url_for('dashboard'))
     if request.method == 'POST':
         pwd = request.form.get('password', '')
-        with open(MASTER_HASH_FILE, 'r') as f:
-            stored = f.read().strip()
+        stored = open(MASTER_HASH_FILE).read().strip()
         if hash_password(pwd) == stored:
             session['authenticated'] = True
             return redirect(url_for('dashboard'))
-        else:
-            flash('Incorrect master password.', 'error')
+        flash('Incorrect master password.', 'error')
     return render_template('login.html')
 
 
 @app.route('/logout')
 def logout():
     session.clear()
+    flash('Logged out.', 'info')
     return redirect(url_for('login'))
 
 
-# ---------------------------------------------------------------------------
-# Dashboard (list all entries)
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Dashboard
+# ------------------------------------------------------------------
 
 @app.route('/dashboard')
 def dashboard():
     if not is_authenticated():
         return redirect(url_for('login'))
-    entries = get_entries()
-    # entries is list of (service, username, encrypted) — strip encrypted for display
-    visible = [{'service': s, 'username': u} for s, u, _ in entries]
-    return render_template('dashboard.html', entries=visible)
+    entries = get_entries(SECRET_KEY)
+    return render_template('dashboard.html', entries=entries)
 
 
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------
 # Add entry
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------
 
 @app.route('/add', methods=['GET', 'POST'])
 def add():
@@ -102,111 +102,101 @@ def add():
         return redirect(url_for('login'))
     generated = None
     if request.method == 'POST':
-        service = request.form.get('service', '').strip()
-        username = request.form.get('username', '').strip()
-        action = request.form.get('action', '')
+        action = request.form.get('action', 'save')
         if action == 'generate':
-            try:
-                length = int(request.form.get('length', 16))
-            except ValueError:
-                length = 16
+            length = int(request.form.get('length', 16))
             generated = generate_secure_password(length)
             return render_template('add.html', generated=generated,
-                                   service=service, username=username)
+                                   service=request.form.get('service', ''),
+                                   username=request.form.get('username', ''))
+        service = request.form.get('service', '').strip()
+        username = request.form.get('username', '').strip()
         password = request.form.get('password', '').strip()
         if not service or not username or not password:
-            flash('Service, username, and password are all required.', 'error')
-        elif not check_password_strength(password):
-            flash('Password too weak. Use uppercase, lowercase, digit, and symbol (min 8 chars).', 'error')
+            flash('All fields are required.', 'error')
         else:
-            add_entry(service, username, password, SECRET_KEY)
-            flash(f'Entry for {username} @ {service} saved.', 'success')
+            ok, msg = check_password_strength(password)
+            if not ok:
+                flash(f'Weak password: {msg}', 'warning')
+            add_entry(SECRET_KEY, service, username, password)
+            flash(f'Entry for "{service}" added.', 'success')
             return redirect(url_for('dashboard'))
     return render_template('add.html', generated=generated)
 
 
-# ---------------------------------------------------------------------------
-# View / copy entry (returns password in response for JS copy)
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------
+# View (AJAX – returns decrypted password JSON)
+# ------------------------------------------------------------------
 
 @app.route('/view', methods=['POST'])
 def view():
     if not is_authenticated():
-        return {'error': 'Not authenticated'}, 401
-    service = request.form.get('service', '').strip()
-    username = request.form.get('username', '').strip()
-    result = find_entry(service, username, SECRET_KEY)
+        return {'error': 'Unauthorized'}, 401
+    service = request.json.get('service', '')
+    result = find_entry(SECRET_KEY, service)
     if result:
-        return {'password': result}
-    return {'error': 'Entry not found'}, 404
+        return {'password': result['password']}
+    return {'error': 'Not found'}, 404
 
 
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------
 # Update entry
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------
 
-@app.route('/update', methods=['GET', 'POST'])
-def update():
+@app.route('/update/<service>', methods=['GET', 'POST'])
+def update(service):
     if not is_authenticated():
         return redirect(url_for('login'))
+    entry = find_entry(SECRET_KEY, service)
+    if not entry:
+        flash('Entry not found.', 'error')
+        return redirect(url_for('dashboard'))
     generated = None
-    prefill_service = request.args.get('service', '')
-    prefill_username = request.args.get('username', '')
     if request.method == 'POST':
-        service = request.form.get('service', '').strip()
-        username = request.form.get('username', '').strip()
-        action = request.form.get('action', '')
+        action = request.form.get('action', 'save')
         if action == 'generate':
-            try:
-                length = int(request.form.get('length', 16))
-            except ValueError:
-                length = 16
+            length = int(request.form.get('length', 16))
             generated = generate_secure_password(length)
-            return render_template('update.html', generated=generated,
-                                   service=service, username=username)
-        password = request.form.get('password', '').strip()
-        if not service or not username or not password:
-            flash('All fields required.', 'error')
-        elif not check_password_strength(password):
-            flash('Password too weak. Use uppercase, lowercase, digit, and symbol (min 8 chars).', 'error')
+            return render_template('update.html', entry=entry, generated=generated)
+        new_password = request.form.get('password', '').strip()
+        if not new_password:
+            flash('Password cannot be empty.', 'error')
         else:
-            update_entry(service, username, password, SECRET_KEY)
-            flash(f'Password updated for {username} @ {service}.', 'success')
+            ok, msg = check_password_strength(new_password)
+            if not ok:
+                flash(f'Weak password: {msg}', 'warning')
+            update_entry(SECRET_KEY, service, new_password)
+            flash(f'Password for "{service}" updated.', 'success')
             return redirect(url_for('dashboard'))
-    return render_template('update.html', generated=generated,
-                           service=prefill_service, username=prefill_username)
+    return render_template('update.html', entry=entry, generated=generated)
 
 
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------
 # Delete entry
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------
 
-@app.route('/delete', methods=['POST'])
-def delete():
+@app.route('/delete/<service>', methods=['POST'])
+def delete(service):
     if not is_authenticated():
         return redirect(url_for('login'))
-    service = request.form.get('service', '').strip()
-    username = request.form.get('username', '').strip()
-    delete_entry(service, username)
-    flash(f'Entry for {username} @ {service} deleted.', 'success')
+    delete_entry(SECRET_KEY, service)
+    flash(f'Entry "{service}" deleted.', 'success')
     return redirect(url_for('dashboard'))
 
 
-# ---------------------------------------------------------------------------
-# Generate password (standalone AJAX endpoint)
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Generate password (AJAX)
+# ------------------------------------------------------------------
 
 @app.route('/generate', methods=['POST'])
 def generate():
     if not is_authenticated():
-        return {'error': 'Not authenticated'}, 401
-    try:
-        length = int(request.form.get('length', 16))
-    except ValueError:
-        length = 16
-    pwd = generate_secure_password(length)
-    return {'password': pwd}
+        return {'error': 'Unauthorized'}, 401
+    length = int(request.json.get('length', 16))
+    password = generate_secure_password(length)
+    return {'password': password}
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
