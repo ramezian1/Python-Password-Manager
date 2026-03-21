@@ -1,0 +1,74 @@
+{% extends 'base.html' %}
+{% block title %}Vault | Password Manager{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h2>&#128274; Your Vault</h2>
+  <a href="{{ url_for('add') }}" class="btn btn-primary">+ Add Entry</a>
+</div>
+
+{% if entries %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Service</th>
+        <th>Username</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in entries %}
+      <tr>
+        <td>{{ loop.index }}</td>
+        <td>{{ entry.service or '—' }}</td>
+        <td>{{ entry.username }}</td>
+        <td class="actions">
+          <button class="btn btn-sm btn-copy"
+            data-service="{{ entry.service }}"
+            data-username="{{ entry.username }}"
+            onclick="copyPassword(this)">
+            &#128203; Copy
+          </button>
+          <a href="{{ url_for('update', service=entry.service, username=entry.username) }}" class="btn btn-sm btn-edit">&#9998; Edit</a>
+          <form method="POST" action="{{ url_for('delete') }}" style="display:inline" onsubmit="return confirm('Delete this entry?')">
+            <input type="hidden" name="service" value="{{ entry.service }}" />
+            <input type="hidden" name="username" value="{{ entry.username }}" />
+            <button type="submit" class="btn btn-sm btn-delete">&#128465; Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="empty-state">
+  <p>No entries yet. <a href="{{ url_for('add') }}">Add your first password</a>.</p>
+</div>
+{% endif %}
+
+<div id="copy-toast" class="toast">Copied to clipboard!</div>
+
+<script>
+async function copyPassword(btn) {
+  const service = btn.dataset.service;
+  const username = btn.dataset.username;
+  const formData = new FormData();
+  formData.append('service', service);
+  formData.append('username', username);
+
+  const resp = await fetch('/view', { method: 'POST', body: formData });
+  const data = await resp.json();
+
+  if (data.password) {
+    await navigator.clipboard.writeText(data.password);
+    const toast = document.getElementById('copy-toast');
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 2000);
+  } else {
+    alert('Could not retrieve password.');
+  }
+}
+</script>
+{% endblock %}
