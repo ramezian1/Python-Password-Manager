@@ -86,24 +86,19 @@ def decrypt_password(encrypted_str: str, secret_key: bytes) -> str:
 # Password strength & generation
 # ---------------------------------------------------------------------------
 
-def check_password_strength(password: str) -> bool:
+def check_password_strength(password: str) -> tuple[bool, str]:
     """Return True if password meets minimum complexity requirements."""
     if len(password) < 8:
-        print("  Reason: Too short (minimum 8 characters).")
-        return False
+        return False, "Too short (minimum 8 characters)."
     if not re.search(r"[a-z]", password):
-        print("  Reason: Needs at least one lowercase letter.")
-        return False
+        return False, "Needs at least one lowercase letter."
     if not re.search(r"[A-Z]", password):
-        print("  Reason: Needs at least one uppercase letter.")
-        return False
+        return False, "Needs at least one uppercase letter."
     if not re.search(r"[0-9]", password):
-        print("  Reason: Needs at least one digit.")
-        return False
+        return False, "Needs at least one digit."
     if not re.search(r"[\W_]", password):
-        print("  Reason: Needs at least one special character.")
-        return False
-    return True
+        return False, "Needs at least one special character."
+    return True, ""
 
 
 def generate_secure_password(length: int = 16) -> str:
@@ -277,9 +272,11 @@ def main():
                 add_entry(service, username, password, secret_key)
             else:
                 password = getpass.getpass("  Enter password: ")
-                if check_password_strength(password):
+                ok, msg = check_password_strength(password)
+                if ok:
                     add_entry(service, username, password, secret_key)
                 else:
+                    print(f"  Reason: {msg}")
                     print("  Password does not meet strength requirements. Not saved.")
 
         elif choice == 2:
@@ -317,7 +314,9 @@ def main():
                     pass
             else:
                 new_password = getpass.getpass("  New password: ")
-                if not check_password_strength(new_password):
+                ok, msg = check_password_strength(new_password)
+                if not ok:
+                    print(f"  Reason: {msg}")
                     print("  Password does not meet strength requirements. Not updated.")
                     continue
             update_entry(service, username, new_password, secret_key)
