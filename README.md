@@ -1,89 +1,42 @@
 # Python Password Manager
 
-> **Live Demo:** Deploy your own instance in minutes — see [Deploy to Render](#deploy-to-render) below.
+A place to keep your passwords. You remember one master password, and the program remembers the rest for you — scrambled, so the file on your computer is unreadable to anyone who doesn't know your master password.
 
-A secure password manager with both a **CLI** and a **Flask web interface**. Passwords are encrypted with **Fernet** (AES-128-CBC + HMAC) via the `cryptography` library. The encryption key is **derived from your master password with scrypt** and is never written to disk.
-
----
-
-## ⚠️ Security notice for anyone who used a version before v2
-
-Earlier versions stored the Fernet key in a `secret.key` file **and that file was committed to this repository's git history**, alongside `passwords.txt`. Anyone who cloned the repo could decrypt the entire vault.
-
-If you ran an earlier version:
-
-1. **Rotate every password stored in the vault** at the real service. Treat them as public.
-2. Pull this version. Your vault is migrated automatically on next login (see [Upgrading](#upgrading-from-v1)).
-3. Delete the `*.migrated` leftovers once you have confirmed the new vault works — they still contain the old key.
-4. If you published your own fork, purge the files from history and force-push:
-   ```bash
-   git rm --cached secret.key passwords.txt   # already done in this version
-   pip install git-filter-repo
-   git filter-repo --invert-paths --path secret.key --path passwords.txt
-   git push --force
-   ```
-   History rewriting is a courtesy, not a fix. Git hosts cache unreachable objects, so **step 1 is the only step that actually protects you.**
+It comes in two flavours: a web page you open in your browser, and a text menu you use in a terminal. Both work on the same saved passwords.
 
 ---
 
-## Features
+## How it works, step by step
 
-- **Master-password-derived encryption** — scrypt (n=2¹⁴, r=8, p=1) stretches your master password into the Fernet key; nothing secret is stored on disk
-- **Add** passwords with a service/website, username, and password
-- **Generate** cryptographically secure passwords (customizable length)
-- **Find & copy** — retrieves a password and copies it to clipboard (web: one click, CLI: `pyperclip`)
-- **List all entries** — shows every saved service and username (no passwords displayed)
-- **Update** an existing password (generate or manual)
-- **Delete** an entry with confirmation
-- **Change master password** — re-encrypts the whole vault under a fresh salt
-- **Multiple accounts per service** — entries are keyed by *(service, username)*, so two Gmail accounts coexist
-- **Password strength checker** — enforces lowercase, uppercase, digit, and symbol
-- **Atomic writes** — the vault is written via temp-file + rename, so a crash mid-save cannot truncate it
-- **Idle lock** — the web UI drops the key from memory after 15 minutes of inactivity
+**1. You pick one master password.**
+The first time you run the program, it asks you to choose a master password. This is the only one you have to remember.
 
-## Interfaces
+**2. The program turns that password into a scrambling key.**
+It runs your master password through a one-way process that always produces the same key from the same password. It's deliberately slow — about a tenth of a second — so anyone trying to guess millions of passwords is slowed to a crawl.
 
-| Mode | How to run | Best for |
-|---|---|---|
-| Web (Flask) | `FLASK_DEV=1 python app.py` | Browser-based UI, shareable demo |
-| CLI | `python main.py` | Terminal use, offline |
+**3. The key is never saved anywhere.**
+This is the important part. The key exists only while the program is running. Close it, and the key is gone. Next time you log in, your master password recreates the same key.
 
-## Security Model
+**4. Your passwords get scrambled with that key.**
+When you save a password, the program scrambles it and writes the scrambled version to a file called `vault.json`. Opening that file shows you nothing but gibberish.
 
-| Item | How it's handled |
-|---|---|
-| Master password | Never stored. scrypt-derived; only a 32-byte *verifier* half is saved in `vault.json` |
-| Encryption key | Derived from the master password at unlock, held in memory only |
-| Stored passwords | Fernet-encrypted inside `vault.json` (local only, git-ignored) |
-| Password verification | `hmac.compare_digest` — constant-time, no timing leak |
-| Web session | Signed cookie holds only an opaque session id; the key lives in server memory, keyed by that id |
-| Cookie flags | `HttpOnly`, `SameSite=Lax`, and `Secure` outside dev mode |
-| Password input (CLI) | `getpass` — hidden from terminal |
-| Password copy (web) | JS `navigator.clipboard` — fetched on demand, never rendered into the HTML |
-| Password copy (CLI) | `pyperclip` — copied to clipboard, not printed |
+**5. Logging in checks your password without storing it.**
+The program keeps a small fingerprint that can confirm your master password is right, but can't be worked backwards to reveal it or to unscramble anything.
 
-**There is no password recovery.** The key is derived from your master password; if you forget it, the vault is unreadable. That is the point.
+**6. Unlocking reverses the scrambling.**
+Type your master password, the program rebuilds the key, and your saved passwords become readable again — one at a time, only when you ask for one.
 
-### Known limitations
+### What this means for you
 
-- **Service and username are stored in cleartext** in `vault.json` — only passwords are encrypted. Someone with the file learns *which* accounts you have, not their passwords.
-- **No CSRF tokens.** `SameSite=Lax` blocks the cross-site POSTs that would matter here, but a token would be better.
-- **Single-user, single-worker.** The unlocked key lives in one process's memory (see below).
-- **No rate limiting** on login attempts.
+- **Nobody can read your saved passwords without your master password.** Not someone who copies `vault.json`, not someone who steals your laptop.
+- **If you forget your master password, your saved passwords are gone.** There's no reset link and no back door. That's the trade-off for the point above.
+- **The web version locks itself after 15 minutes** of you not touching it, and forgets the key when you log out.
 
-## Requirements
+---
 
-- Python 3.10+ (uses `X | None` type syntax)
-- Dependencies listed in `requirements.txt`
+## Getting started
 
-```
-cryptography>=42.0.0
-pyperclip>=1.8.2
-flask>=3.0.0
-gunicorn>=21.2.0
-```
-
-## Installation
+You need Python 3.10 or newer.
 
 ```bash
 git clone https://github.com/ramezian1/Python-Password-Manager.git
@@ -91,35 +44,43 @@ cd Python-Password-Manager
 pip install -r requirements.txt
 ```
 
-## Configuration
-
-| Env var | Required | Purpose |
-|---|---|---|
-| `FLASK_SECRET_KEY` | **Yes**, in production | Signs session cookies. The app refuses to start without it — an unstable value logs everyone out on restart. Generate with `python -c "import secrets; print(secrets.token_hex(32))"` |
-| `FLASK_DEV` | No | Set to `1` for local development: uses a throwaway session key and allows plain HTTP cookies |
-| `PORT` | No | Port for `python app.py` (default `5000`) |
-
-## Usage
-
-### Web Interface (Flask)
+### Run it in your browser
 
 ```bash
 FLASK_DEV=1 python app.py
 ```
 
-Open `http://localhost:5000` in your browser.
+Then open **http://localhost:5000**.
 
-1. On first run you will be directed to `/setup` to create your master password.
-2. Log in at `/login`.
-3. Use the dashboard to add, copy, edit, or delete entries.
+On Windows PowerShell, set the variable first:
 
-### CLI
+```powershell
+$env:FLASK_DEV = "1"
+python app.py
+```
+
+### Run it in the terminal
 
 ```bash
 python main.py
 ```
 
-### Menu options
+---
+
+## Using the web version
+
+1. **First visit** — it asks you to create a master password. Type it twice.
+2. **Log in** — type that master password.
+3. **Your vault** — a table of everything you've saved. Only the site names and usernames are shown; passwords stay hidden.
+4. **Add an entry** — click *+ Add Entry*, fill in the site, your username, and a password. Or click *Generate* and it invents a strong one for you.
+5. **Copy a password** — click *Copy* next to any row. It goes straight to your clipboard without ever appearing on screen.
+6. **Change one** — click *Edit* to replace a password.
+7. **Remove one** — click *Delete*. It asks you to confirm first.
+8. **Log out** — click *Logout*, and the vault locks immediately.
+
+## Using the terminal version
+
+You get a numbered menu:
 
 ```
 === Password Manager ===
@@ -132,93 +93,97 @@ python main.py
   7. Exit
 ```
 
-## Web Routes
+Type a number and press Enter. When it asks for a password, what you type stays invisible — that's on purpose.
 
-| Route | Method | Description |
-|---|---|---|
-| `/` or `/login` | GET / POST | Master password login (migrates a v1 vault on first success) |
-| `/setup` | GET / POST | First-run master password creation |
-| `/logout` | GET | Drop the key from memory and clear the session |
-| `/dashboard` | GET | View all saved entries |
-| `/add` | GET / POST | Add a new entry |
-| `/update?service=&username=` | GET / POST | Update an existing entry |
-| `/delete` | POST (form) | Delete an entry — `service` + `username` fields |
-| `/view` | POST (form) | Return decrypted password (AJAX) |
-| `/generate` | POST (JSON) | Generate a secure password (AJAX) |
+Option **6** changes your master password. It unscrambles everything with the old one and re-scrambles it with the new one, so nothing is lost.
 
-`/update` and `/delete` take the entry identity as parameters rather than path segments, because a service name may be empty or contain a `/`.
+---
 
-## Upgrading from v1
+## A note on the demo password
 
-The first successful login (web or CLI) detects a v1 vault and converts it:
+The vault included with this project uses the master password:
 
-1. Verifies your existing master password against the old `master.hash`.
-2. Decrypts every entry with the old `secret.key`.
-3. Re-encrypts them under a key derived from the same master password, into `vault.json`.
-4. Renames `secret.key`, `passwords.txt`, and `master.hash` to `*.migrated`.
+```
+Demo1234!
+```
 
-Your master password does not change. **Delete the `*.migrated` files once you have confirmed the vault works** — they still contain the old on-disk key.
+This is a portfolio project, so the password is deliberately obvious. **If you put this online where other people can reach it, change it** — option 6 in the terminal menu, or delete `vault.json` and start fresh.
 
-> Entries whose *service* or *username* contained a `:` were already corrupted by v1's `service:username:ciphertext` line format and cannot be recovered. The migration reports how many it had to skip rather than dropping them silently.
+Your own vault file is never uploaded. It's listed in `.gitignore`, so it stays on your computer.
 
-## Deploy to Render
+---
 
-This repo ships with a `render.yaml` and `Procfile` for zero-config deployment on [Render](https://render.com).
+## Important: earlier versions were not safe
 
-### Steps
+Versions before this one saved the scrambling key to a file called `secret.key` — **and that file was uploaded to this public repository.** Anyone who downloaded the project could read every saved password.
 
-1. Fork or push this repo to your GitHub account.
-2. Go to [https://dashboard.render.com](https://dashboard.render.com) and click **New → Web Service**.
-3. Connect your GitHub repo (`Python-Password-Manager`).
-4. Render will auto-detect `render.yaml` and pre-fill all settings:
-   - **Build Command:** `pip install -r requirements.txt`
-   - **Start Command:** `gunicorn --workers 1 --threads 4 app:app`
-   - **Env var:** `FLASK_SECRET_KEY` auto-generated
-   - **Disk:** 1 GB persistent volume mounted at `/opt/render/project/src` (keeps `vault.json` across deploys)
-5. Click **Create Web Service**.
-6. Once deployed, visit your Render URL (e.g. `https://python-password-manager.onrender.com`).
-7. On first visit you will be prompted to create your master password.
+That's fixed. The key is now built from your master password and never written down.
 
-> **Do not raise the worker count.** The unlocked vault key is held in one process's memory, so a second worker would not see your login and would appear to log you out at random. Scaling this safely needs a shared session store, which is on the roadmap.
+**If you used an older version, change every password you had stored in it, at the real website.** Re-scrambling them here doesn't help — they were already exposed. This is the one step the program can't do for you.
 
-### Railway (alternative)
+---
 
-1. Install the [Railway CLI](https://docs.railway.app/develop/cli): `npm install -g @railway/cli`
-2. `railway login`
-3. `railway init` and select this repo.
-4. `railway up`
-5. Set `FLASK_SECRET_KEY` in your Railway project environment variables.
+## Rules for a good password
 
-> **Note:** The free tier on Render spins down after 15 minutes of inactivity. The first request after sleep may take ~30 seconds — and because the key is in memory, a spin-down logs you out.
+When you save a password, the program checks that it has:
 
-## File Structure
+- at least 8 characters
+- a lowercase letter
+- an uppercase letter
+- a number
+- a symbol
+
+Your master password has to pass these. For everything else it's a warning, not a refusal — it'll tell you the password is weak but still save it, because it's your call.
+
+The *Generate* button always produces one that passes.
+
+---
+
+## What's in the folder
 
 ```
 Python-Password-Manager/
-├── app.py               # Flask web application
-├── main.py              # CLI application + shared core logic
-├── requirements.txt     # Python dependencies
-├── Procfile             # Gunicorn start command (Render/Railway)
-├── render.yaml          # Render deployment configuration
-├── .gitignore           # Excludes sensitive files
-├── templates/
-│   ├── base.html        # Shared layout (navbar, flash messages)
-│   ├── login.html       # Master password login page
-│   ├── setup.html       # First-run setup page
-│   ├── dashboard.html   # Vault table with actions
-│   ├── add.html         # Add entry form
-│   └── update.html      # Update entry form
-├── static/
-│   └── style.css        # Dark theme styles
-└── vault.json           # Salt, verifier, and encrypted entries (auto-generated, git-ignored)
+├── app.py            The browser version
+├── main.py           The terminal version, plus the shared scrambling logic
+├── vault.json        Your saved passwords, scrambled (stays on your computer)
+├── templates/        The web pages
+├── static/           How the web pages look
+├── requirements.txt  The extra packages needed
+├── Procfile          How to start it on a hosting service
+└── render.yaml       Settings for hosting on Render
 ```
 
-## Roadmap
+---
 
-- Encrypt service/username too, not just passwords
-- CSRF tokens on state-changing forms
-- Shared session store so the app can run multiple workers
-- Rate limiting on login
-- Export / import encrypted vault backup
-- Search entries by keyword
-- 2FA / TOTP support
+## Putting it online
+
+The project is set up for [Render](https://render.com).
+
+1. Push your copy to GitHub.
+2. On Render, choose **New → Web Service** and pick your repository.
+3. Render reads `render.yaml` and fills in the settings itself.
+4. Click **Create Web Service** and wait for it to build.
+5. Open the address it gives you and set a master password on first visit.
+
+Two things to know:
+
+- **Leave the worker count at 1.** The unlocking key is held in memory by a single running copy of the program. A second copy wouldn't know you'd logged in, and you'd get bounced back to the login page at random.
+- **Free hosting goes to sleep** after 15 minutes with no visitors. Waking it takes about 30 seconds, and because the key lives in memory, you'll need to log in again.
+
+You'll also need one setting, `FLASK_SECRET_KEY`, which the program uses to keep your browser session valid. Render creates it automatically. The program refuses to start without it, on purpose.
+
+---
+
+## Honest limitations
+
+- **Site names and usernames are readable** in `vault.json`. Only the passwords are scrambled. Someone with the file learns which accounts you have, but not how to get into them.
+- **One person per vault.** There are no separate user accounts.
+- **No limit on login attempts.** Someone with access to the running program can keep guessing, though the deliberately slow key process makes that painful.
+
+## Ideas for later
+
+- Scramble the site names and usernames too
+- Limit repeated login attempts
+- Export and import a backup
+- Search your entries
+- Two-factor authentication
