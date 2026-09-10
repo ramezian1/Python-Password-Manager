@@ -4,6 +4,7 @@ secret.key
 passwords.txt
 master.hash
 *.migrated
+.flask_secret
 
 # Python
 __pycache__/

@@ -44,31 +44,54 @@ from main import (
 # How long an unlocked vault stays unlocked without activity.
 UNLOCK_TTL_SECONDS = 15 * 60
 
-DEV_MODE = os.environ.get("FLASK_DEV") == "1"
+# Where the browser-session signing key is kept when running locally. This
+# only signs session cookies; it is NOT the vault key and cannot unlock
+# anything. A forged cookie yields a session id that is absent from _UNLOCKED,
+# so it still gets you nothing.
+SESSION_KEY_FILE = ".flask_secret"
+
+# The normal case is local: clone the repo, run it, open a browser. Setting
+# FLASK_SECRET_KEY is what marks a hosted deployment, where the app is served
+# over HTTPS and the cookie can be locked down further.
+HOSTED = bool(os.environ.get("FLASK_SECRET_KEY"))
+
+
+def _local_session_key() -> str:
+    """Read, or create once, a stable session key for local use.
+
+    Stored in a file so restarting the program does not log you out. Falls
+    back to a throwaway key if the file cannot be written (read-only checkout,
+    awkward permissions) -- that still works, it just means a restart logs you
+    out.
+    """
+    try:
+        with open(SESSION_KEY_FILE, "r", encoding="utf-8") as handle:
+            existing = handle.read().strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+
+    key = secrets.token_hex(32)
+    try:
+        with open(SESSION_KEY_FILE, "w", encoding="utf-8") as handle:
+            handle.write(key)
+        os.chmod(SESSION_KEY_FILE, 0o600)
+    except OSError:
+        pass
+    return key
+
 
 app = Flask(__name__)
-
-_flask_secret = os.environ.get("FLASK_SECRET_KEY")
-if not _flask_secret:
-    if not DEV_MODE:
-        raise RuntimeError(
-            "FLASK_SECRET_KEY is not set. Without a stable value, sessions are "
-            "invalidated on every restart and differ across workers. Set it to "
-            "a random string (e.g. `python -c \"import secrets; "
-            "print(secrets.token_hex(32))\"`), or set FLASK_DEV=1 to use a "
-            "throwaway key for local development."
-        )
-    _flask_secret = secrets.token_hex(32)
-    print("WARNING: FLASK_DEV=1, using an ephemeral session key. "
-          "Sessions will not survive a restart.")
-
-app.secret_key = _flask_secret
+app.secret_key = os.environ.get("FLASK_SECRET_KEY") or _local_session_key()
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     # Lax stops the cookie riding along on cross-site POSTs, which is what
     # guards /delete and /view here -- there is no CSRF token yet.
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=not DEV_MODE,
+    # A Secure cookie is never sent over plain http, which would break login
+    # on http://127.0.0.1. Only switch it on where there is real HTTPS.
+    SESSION_COOKIE_SECURE=HOSTED,
 )
 
 # session id -> {"key": bytes, "expires": float}
@@ -368,5 +391,10 @@ def generate():
 
 
 if __name__ == "__main__":
+    # Loopback by default. This is a personal vault on your own machine;
+    # binding 0.0.0.0 would offer the login page to everyone on your network.
+    # Hosting platforms run this through gunicorn and do their own binding.
+    host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    print(f"Password manager running at http://{host}:{port}")
+    app.run(host=host, port=port, debug=False)
