@@ -1,202 +1,372 @@
+"""Flask front-end for the password manager.
+
+The encryption key is derived from the master password at login and held in
+memory only, in ``_UNLOCKED``, keyed by an opaque session id. It deliberately
+does NOT go in the Flask session: session cookies are signed but not
+encrypted, so anything put there is readable by the client.
+
+Because the key lives in process memory, the app must run as a SINGLE worker
+(see Procfile / render.yaml). With multiple workers a request can land on a
+worker that never saw the login and the user appears randomly logged out.
+"""
+
 import os
 import secrets
-from flask import Flask, render_template, request, redirect, url_for, session, flash
-from main import (
-    hash_password,
-    generate_key,
-    generate_secure_password,
-    check_password_strength,
-    add_entry,
-    find_entry,
-    update_entry,
-    delete_entry,
-    list_entries as get_entries,
-    setup_master_password,
-    MASTER_HASH_FILE,
+import time
+
+from flask import (
+    Flask,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
 )
 
+from main import (
+    VaultError,
+    add_entry,
+    check_password_strength,
+    create_vault,
+    delete_entry,
+    find_entry,
+    generate_secure_password,
+    legacy_vault_present,
+    list_entries,
+    migrate_legacy_vault,
+    unlock_vault,
+    update_entry,
+    vault_exists,
+)
+
+# How long an unlocked vault stays unlocked without activity.
+UNLOCK_TTL_SECONDS = 15 * 60
+
+DEV_MODE = os.environ.get("FLASK_DEV") == "1"
+
 app = Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(32))
 
-# Load encryption key once at startup
-SECRET_KEY = generate_key()
+_flask_secret = os.environ.get("FLASK_SECRET_KEY")
+if not _flask_secret:
+    if not DEV_MODE:
+        raise RuntimeError(
+            "FLASK_SECRET_KEY is not set. Without a stable value, sessions are "
+            "invalidated on every restart and differ across workers. Set it to "
+            "a random string (e.g. `python -c \"import secrets; "
+            "print(secrets.token_hex(32))\"`), or set FLASK_DEV=1 to use a "
+            "throwaway key for local development."
+        )
+    _flask_secret = secrets.token_hex(32)
+    print("WARNING: FLASK_DEV=1, using an ephemeral session key. "
+          "Sessions will not survive a restart.")
 
+app.secret_key = _flask_secret
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    # Lax stops the cookie riding along on cross-site POSTs, which is what
+    # guards /delete and /view here -- there is no CSRF token yet.
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=not DEV_MODE,
+)
 
-def is_authenticated():
-    return session.get('authenticated') is True
-
-
-# ------------------------------------------------------------------
-# Setup: first-run master password creation via web
-# ------------------------------------------------------------------
-
-@app.route('/setup', methods=['GET', 'POST'])
-def setup():
-    if os.path.exists(MASTER_HASH_FILE):
-        return redirect(url_for('login'))
-    if request.method == 'POST':
-        pwd = request.form.get('password', '')
-        confirm = request.form.get('confirm', '')
-        if pwd != confirm:
-            flash('Passwords do not match.', 'error')
-        elif len(pwd) < 8:
-            flash('Master password must be at least 8 characters.', 'error')
-        else:
-            ok, msg = check_password_strength(pwd)
-            if not ok:
-                flash(msg, 'error')
-            else:
-                setup_master_password(pwd)
-                flash('Master password created. Please log in.', 'success')
-                return redirect(url_for('login'))
-    return render_template('setup.html')
+# session id -> {"key": bytes, "expires": float}
+_UNLOCKED: dict[str, dict] = {}
 
 
-# ------------------------------------------------------------------
-# Login / Logout
-# ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Session / key handling
+# ---------------------------------------------------------------------------
 
-@app.route('/', methods=['GET', 'POST'])
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if not os.path.exists(MASTER_HASH_FILE):
-        return redirect(url_for('setup'))
-    if is_authenticated():
-        return redirect(url_for('dashboard'))
-    if request.method == 'POST':
-        pwd = request.form.get('password', '')
-        stored = open(MASTER_HASH_FILE).read().strip()
-        if hash_password(pwd) == stored:
-            session['authenticated'] = True
-            return redirect(url_for('dashboard'))
-        flash('Incorrect master password.', 'error')
-    return render_template('login.html')
+def _purge_expired(now: float) -> None:
+    for sid in [s for s, v in _UNLOCKED.items() if v["expires"] <= now]:
+        _UNLOCKED.pop(sid, None)
 
 
-@app.route('/logout')
-def logout():
+def _store_key(key: bytes) -> None:
+    sid = secrets.token_urlsafe(32)
     session.clear()
-    flash('Logged out.', 'info')
-    return redirect(url_for('login'))
+    session["sid"] = sid
+    # Only used by base.html to decide whether to show the nav links.
+    session["authenticated"] = True
+    _UNLOCKED[sid] = {"key": key, "expires": time.time() + UNLOCK_TTL_SECONDS}
 
 
-# ------------------------------------------------------------------
+def _forget_key() -> None:
+    sid = session.get("sid")
+    if sid:
+        _UNLOCKED.pop(sid, None)
+    session.clear()
+
+
+def current_key() -> bytes | None:
+    """Return the unlocked key for this session, refreshing its idle timer."""
+    now = time.time()
+    _purge_expired(now)
+    sid = session.get("sid")
+    if not sid:
+        return None
+    record = _UNLOCKED.get(sid)
+    if record is None:
+        session.clear()
+        return None
+    record["expires"] = now + UNLOCK_TTL_SECONDS
+    return record["key"]
+
+
+def _wants_json() -> bool:
+    return request.accept_mimetypes.best == "application/json" or request.is_json
+
+
+@app.errorhandler(VaultError)
+def handle_vault_error(exc: VaultError):
+    if _wants_json():
+        return jsonify({"error": str(exc)}), 500
+    flash(str(exc), "error")
+    return redirect(url_for("login"))
+
+
+# ---------------------------------------------------------------------------
+# Setup: first-run master password creation
+# ---------------------------------------------------------------------------
+
+@app.route("/setup", methods=["GET", "POST"])
+def setup():
+    if vault_exists() or legacy_vault_present():
+        return redirect(url_for("login"))
+
+    if request.method == "POST":
+        pwd = request.form.get("password", "")
+        confirm = request.form.get("confirm", "")
+        ok, reason = check_password_strength(pwd)
+        if pwd != confirm:
+            flash("Passwords do not match.", "error")
+        elif not ok:
+            flash(reason, "error")
+        else:
+            create_vault(pwd)
+            flash("Vault created. Please log in.", "success")
+            return redirect(url_for("login"))
+
+    return render_template("setup.html")
+
+
+# ---------------------------------------------------------------------------
+# Login / Logout
+# ---------------------------------------------------------------------------
+
+@app.route("/", methods=["GET", "POST"])
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not vault_exists() and not legacy_vault_present():
+        return redirect(url_for("setup"))
+    if current_key() is not None:
+        return redirect(url_for("dashboard"))
+
+    if request.method == "POST":
+        pwd = request.form.get("password", "")
+
+        if legacy_vault_present():
+            # First login after the upgrade: re-encrypt under a derived key.
+            try:
+                key, count, skipped = migrate_legacy_vault(pwd)
+            except VaultError as exc:
+                flash(str(exc), "error")
+                return render_template("login.html")
+            _store_key(key)
+            flash(
+                f"Vault upgraded and re-encrypted ({count} "
+                f"entr{'y' if count == 1 else 'ies'}). Your old secret.key was "
+                "renamed to secret.key.migrated -- delete it.",
+                "success",
+            )
+            if skipped:
+                flash(
+                    f"{skipped} entr{'y' if skipped == 1 else 'ies'} could not be "
+                    "decrypted and were left behind in passwords.txt.migrated.",
+                    "warning",
+                )
+            return redirect(url_for("dashboard"))
+
+        key = unlock_vault(pwd)
+        if key is not None:
+            _store_key(key)
+            return redirect(url_for("dashboard"))
+        flash("Incorrect master password.", "error")
+
+    return render_template("login.html")
+
+
+@app.route("/logout")
+def logout():
+    _forget_key()
+    flash("Logged out.", "info")
+    return redirect(url_for("login"))
+
+
+# ---------------------------------------------------------------------------
 # Dashboard
-# ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
-@app.route('/dashboard')
+@app.route("/dashboard")
 def dashboard():
-    if not is_authenticated():
-        return redirect(url_for('login'))
-    entries = get_entries(SECRET_KEY)
-    return render_template('dashboard.html', entries=entries)
+    if current_key() is None:
+        return redirect(url_for("login"))
+    return render_template("dashboard.html", entries=list_entries())
 
 
-# ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Add entry
-# ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
-@app.route('/add', methods=['GET', 'POST'])
+def _requested_length() -> int:
+    """Clamp the generator length to the range the form advertises."""
+    try:
+        length = int(request.form.get("length", 16))
+    except (TypeError, ValueError):
+        length = 16
+    return max(8, min(length, 64))
+
+
+@app.route("/add", methods=["GET", "POST"])
 def add():
-    if not is_authenticated():
-        return redirect(url_for('login'))
-    generated = None
-    if request.method == 'POST':
-        action = request.form.get('action', 'save')
-        if action == 'generate':
-            length = int(request.form.get('length', 16))
-            generated = generate_secure_password(length)
-            return render_template('add.html', generated=generated,
-                                   service=request.form.get('service', ''),
-                                   username=request.form.get('username', ''))
-        service = request.form.get('service', '').strip()
-        username = request.form.get('username', '').strip()
-        password = request.form.get('password', '').strip()
+    key = current_key()
+    if key is None:
+        return redirect(url_for("login"))
+
+    service = username = ""
+    if request.method == "POST":
+        service = request.form.get("service", "").strip()
+        username = request.form.get("username", "").strip()
+
+        if request.form.get("action") == "generate":
+            return render_template(
+                "add.html",
+                generated=generate_secure_password(_requested_length()),
+                service=service,
+                username=username,
+            )
+
+        password = request.form.get("password", "").strip()
         if not service or not username or not password:
-            flash('All fields are required.', 'error')
+            flash("All fields are required.", "error")
         else:
-            ok, msg = check_password_strength(password)
+            ok, reason = check_password_strength(password)
             if not ok:
-                flash(f'Weak password: {msg}', 'warning')
-            add_entry(SECRET_KEY, service, username, password)
-            flash(f'Entry for "{service}" added.', 'success')
-            return redirect(url_for('dashboard'))
-    return render_template('add.html', generated=generated)
+                # A warning, not a block: it is the user's password to choose.
+                flash(f"Weak password saved: {reason}", "warning")
+            if add_entry(service, username, password, key):
+                flash(f'Entry for "{service}" added.', "success")
+                return redirect(url_for("dashboard"))
+            flash(
+                f'"{username}" at "{service}" already exists. Edit it instead.',
+                "error",
+            )
+
+    return render_template("add.html", service=service, username=username)
 
 
-# ------------------------------------------------------------------
-# View (AJAX – returns decrypted password JSON)
-# ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# View a password (AJAX; dashboard.html posts form-encoded, not JSON)
+# ---------------------------------------------------------------------------
 
-@app.route('/view', methods=['POST'])
+@app.route("/view", methods=["POST"])
 def view():
-    if not is_authenticated():
-        return {'error': 'Unauthorized'}, 401
-    service = request.json.get('service', '')
-    result = find_entry(SECRET_KEY, service)
-    if result:
-        return {'password': result['password']}
-    return {'error': 'Not found'}, 404
+    key = current_key()
+    if key is None:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    entry = find_entry(
+        request.form.get("service", ""), request.form.get("username", ""), key
+    )
+    if entry is None:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"password": entry["password"]})
 
 
-# ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Update entry
-# ------------------------------------------------------------------
+#
+# Identified by query string rather than a path segment: a service name can be
+# empty or contain a slash, both of which break /update/<service>/<username>.
+# ---------------------------------------------------------------------------
 
-@app.route('/update/<service>', methods=['GET', 'POST'])
-def update(service):
-    if not is_authenticated():
-        return redirect(url_for('login'))
-    entry = find_entry(SECRET_KEY, service)
-    if not entry:
-        flash('Entry not found.', 'error')
-        return redirect(url_for('dashboard'))
-    generated = None
-    if request.method == 'POST':
-        action = request.form.get('action', 'save')
-        if action == 'generate':
-            length = int(request.form.get('length', 16))
-            generated = generate_secure_password(length)
-            return render_template('update.html', entry=entry, generated=generated)
-        new_password = request.form.get('password', '').strip()
+@app.route("/update", methods=["GET", "POST"])
+def update():
+    key = current_key()
+    if key is None:
+        return redirect(url_for("login"))
+
+    source = request.form if request.method == "POST" else request.args
+    service = source.get("service", "")
+    username = source.get("username", "")
+
+    entry = find_entry(service, username, key)
+    if entry is None:
+        flash("Entry not found.", "error")
+        return redirect(url_for("dashboard"))
+
+    if request.method == "POST":
+        if request.form.get("action") == "generate":
+            return render_template(
+                "update.html",
+                service=service,
+                username=username,
+                generated=generate_secure_password(_requested_length()),
+            )
+
+        new_password = request.form.get("password", "").strip()
         if not new_password:
-            flash('Password cannot be empty.', 'error')
+            flash("Password cannot be empty.", "error")
         else:
-            ok, msg = check_password_strength(new_password)
+            ok, reason = check_password_strength(new_password)
             if not ok:
-                flash(f'Weak password: {msg}', 'warning')
-            update_entry(SECRET_KEY, service, new_password)
-            flash(f'Password for "{service}" updated.', 'success')
-            return redirect(url_for('dashboard'))
-    return render_template('update.html', entry=entry, generated=generated)
+                flash(f"Weak password saved: {reason}", "warning")
+            if update_entry(service, username, new_password, key):
+                flash(f'Password for "{service}" updated.', "success")
+            else:
+                flash("Entry not found.", "error")
+            return redirect(url_for("dashboard"))
+
+    return render_template("update.html", service=service, username=username)
 
 
-# ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Delete entry
-# ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
-@app.route('/delete/<service>', methods=['POST'])
-def delete(service):
-    if not is_authenticated():
-        return redirect(url_for('login'))
-    delete_entry(SECRET_KEY, service)
-    flash(f'Entry "{service}" deleted.', 'success')
-    return redirect(url_for('dashboard'))
+@app.route("/delete", methods=["POST"])
+def delete():
+    if current_key() is None:
+        return redirect(url_for("login"))
+
+    service = request.form.get("service", "")
+    username = request.form.get("username", "")
+    if delete_entry(service, username):
+        flash(f'Entry "{service}" deleted.', "success")
+    else:
+        flash("Entry not found.", "error")
+    return redirect(url_for("dashboard"))
 
 
-# ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Generate password (AJAX)
-# ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
-@app.route('/generate', methods=['POST'])
+@app.route("/generate", methods=["POST"])
 def generate():
-    if not is_authenticated():
-        return {'error': 'Unauthorized'}, 401
-    length = int(request.json.get('length', 16))
-    password = generate_secure_password(length)
-    return {'password': password}
+    if current_key() is None:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        length = int(payload.get("length", 16))
+    except (TypeError, ValueError):
+        length = 16
+    return jsonify({"password": generate_secure_password(max(8, min(length, 64)))})
 
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)

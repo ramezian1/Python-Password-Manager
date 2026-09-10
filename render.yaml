@@ -3,7 +3,9 @@ services:
     name: python-password-manager
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    # Exactly one worker: the vault key is held in that process's memory,
+    # so a second worker would not share the unlocked session.
+    startCommand: gunicorn --workers 1 --threads 4 app:app
     envVars:
       - key: FLASK_SECRET_KEY
         generateValue: true

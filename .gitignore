@@ -1,7 +1,9 @@
 # Sensitive data - never commit these
+vault.json
 secret.key
 passwords.txt
 master.hash
+*.migrated
 
 # Python
 __pycache__/
