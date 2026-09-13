@@ -13,15 +13,18 @@ Design notes
 """
 
 import base64
+import csv
 import getpass
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
 import secrets
 import string
 import tempfile
+from html.parser import HTMLParser
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -327,6 +330,147 @@ def delete_entry(service: str, username: str) -> bool:
     vault["entries"] = remaining
     _save_vault(vault)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Import from CSV / HTML
+#
+# Most password managers and browsers export a table with a header row --
+# Chrome/Firefox as CSV, others as an HTML table. Column names vary ("url" vs
+# "name" vs "service"), so headers are matched against known aliases rather
+# than requiring an exact format.
+# ---------------------------------------------------------------------------
+
+_HEADER_ALIASES = {
+    "service": {"service", "name", "title", "url", "website", "site", "hostname"},
+    "username": {"username", "login", "user", "email"},
+    "password": {"password", "pass", "pwd"},
+}
+
+
+def _canonical_field(header: str) -> str | None:
+    header = header.strip().lower()
+    for canonical, aliases in _HEADER_ALIASES.items():
+        if header in aliases:
+            return canonical
+    return None
+
+
+def _rows_from_dicts(dict_rows) -> tuple[list[dict], int]:
+    """Map raw {header: value} rows to {'service','username','password'}.
+
+    A row without a username or password cannot become an entry and is
+    counted as invalid rather than silently dropped, so the caller can report
+    it to the user.
+    """
+    entries = []
+    invalid = 0
+    for raw in dict_rows:
+        mapped = {}
+        for header, value in raw.items():
+            if not header:
+                continue
+            canonical = _canonical_field(header)
+            if canonical and canonical not in mapped and value:
+                mapped[canonical] = value.strip()
+        username = mapped.get("username", "")
+        password = mapped.get("password", "")
+        if not username or not password:
+            invalid += 1
+            continue
+        entries.append({
+            "service": mapped.get("service", ""),
+            "username": username,
+            "password": password,
+        })
+    return entries, invalid
+
+
+def parse_csv_rows(text: str) -> tuple[list[dict], int]:
+    """Parse a CSV export. Returns (entries, invalid_row_count)."""
+    reader = csv.DictReader(io.StringIO(text))
+    return _rows_from_dicts(reader)
+
+
+class _TableExtractor(HTMLParser):
+    """Pull rows out of the first <table> in an HTML document.
+
+    Deliberately minimal: no attribute handling, no nested tables -- just
+    enough to read a flat export table the way csv.DictReader reads a CSV.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.rows: list[list[str]] = []
+        self._in_table = False
+        self._table_done = False
+        self._row: list[str] | None = None
+        self._cell: list[str] | None = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "table" and not self._table_done:
+            self._in_table = True
+        elif not self._in_table:
+            return
+        elif tag == "tr":
+            self._row = []
+        elif tag in ("td", "th"):
+            self._cell = []
+
+    def handle_endtag(self, tag):
+        if not self._in_table:
+            return
+        if tag in ("td", "th") and self._cell is not None and self._row is not None:
+            self._row.append("".join(self._cell).strip())
+            self._cell = None
+        elif tag == "tr" and self._row is not None:
+            self.rows.append(self._row)
+            self._row = None
+        elif tag == "table":
+            self._in_table = False
+            self._table_done = True
+
+    def handle_data(self, data):
+        if self._cell is not None:
+            self._cell.append(data)
+
+
+def parse_html_rows(text: str) -> tuple[list[dict], int]:
+    """Parse an HTML table export. Returns (entries, invalid_row_count)."""
+    parser = _TableExtractor()
+    parser.feed(text)
+    rows = [row for row in parser.rows if any(cell for cell in row)]
+    if not rows:
+        return [], 0
+    header, *data_rows = rows
+    dict_rows = (dict(zip(header, row)) for row in data_rows)
+    return _rows_from_dicts(dict_rows)
+
+
+def import_entries(entries: list[dict], key: bytes) -> tuple[int, int]:
+    """Add parsed entries to the vault. Returns (added, duplicate_count).
+
+    Duplicates -- against the existing vault or against each other within the
+    same import -- are skipped rather than overwritten, same as ``add_entry``.
+    """
+    vault = _load_vault()
+    cipher = Fernet(key)
+    added = 0
+    duplicates = 0
+    for entry in entries:
+        service, username = entry["service"], entry["username"]
+        if any(_matches(e, service, username) for e in vault["entries"]):
+            duplicates += 1
+            continue
+        vault["entries"].append({
+            "service": service,
+            "username": username,
+            "password": cipher.encrypt(entry["password"].encode()).decode("utf-8"),
+        })
+        added += 1
+    if added:
+        _save_vault(vault)
+    return added, duplicates
 
 
 # ---------------------------------------------------------------------------

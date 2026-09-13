@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+{% block title %}Import | Password Manager{% endblock %}
+{% block content %}
+<div class="form-page">
+  <h2>&#128229; Import Passwords</h2>
+  <p>Upload a CSV or HTML export from your browser or another password manager.</p>
+  <p>Columns are matched by name, so any of these work:</p>
+  <ul>
+    <li><strong>Service</strong>: <code>service</code>, <code>name</code>, <code>title</code>, <code>url</code>, <code>website</code>, <code>site</code>, <code>hostname</code></li>
+    <li><strong>Username</strong>: <code>username</code>, <code>login</code>, <code>user</code>, <code>email</code></li>
+    <li><strong>Password</strong>: <code>password</code>, <code>pass</code>, <code>pwd</code></li>
+  </ul>
+  <p>Entries that already exist (same service and username) are skipped, never overwritten.</p>
+
+  <form method="POST" enctype="multipart/form-data">
+    <div class="form-group">
+      <label>File (.csv, .html)</label>
+      <input type="file" name="file" accept=".csv,.html,.htm" required />
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Import</button>
+      <a href="{{ url_for('dashboard') }}" class="btn btn-ghost">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

@@ -33,9 +33,12 @@ from main import (
     delete_entry,
     find_entry,
     generate_secure_password,
+    import_entries,
     legacy_vault_present,
     list_entries,
     migrate_legacy_vault,
+    parse_csv_rows,
+    parse_html_rows,
     unlock_vault,
     update_entry,
     vault_exists,
@@ -92,6 +95,9 @@ app.config.update(
     # A Secure cookie is never sent over plain http, which would break login
     # on http://127.0.0.1. Only switch it on where there is real HTTPS.
     SESSION_COOKIE_SECURE=HOSTED,
+    # Generous enough for a very large export; just a guard against someone
+    # accidentally (or maliciously) uploading something huge.
+    MAX_CONTENT_LENGTH=5 * 1024 * 1024,
 )
 
 # session id -> {"key": bytes, "expires": float}
@@ -288,6 +294,63 @@ def add():
             )
 
     return render_template("add.html", service=service, username=username)
+
+
+# ---------------------------------------------------------------------------
+# Import entries from a CSV or HTML export
+# ---------------------------------------------------------------------------
+
+@app.route("/import", methods=["GET", "POST"])
+def import_passwords():
+    key = current_key()
+    if key is None:
+        return redirect(url_for("login"))
+
+    if request.method == "POST":
+        upload = request.files.get("file")
+        if upload is None or not upload.filename:
+            flash("Choose a file to import.", "error")
+            return render_template("import.html")
+
+        ext = os.path.splitext(upload.filename)[1].lower()
+        if ext not in (".csv", ".html", ".htm"):
+            flash("Only .csv and .html files are supported.", "error")
+            return render_template("import.html")
+
+        try:
+            text = upload.read().decode("utf-8-sig")
+        except UnicodeDecodeError:
+            flash("Could not read that file as text.", "error")
+            return render_template("import.html")
+
+        parse = parse_csv_rows if ext == ".csv" else parse_html_rows
+        entries, invalid = parse(text)
+
+        if not entries and not invalid:
+            flash("No rows found in that file.", "error")
+            return render_template("import.html")
+
+        added, duplicates = import_entries(entries, key)
+
+        flash(
+            f"Imported {added} entr{'y' if added == 1 else 'ies'}.",
+            "success" if added else "info",
+        )
+        if duplicates:
+            flash(
+                f"{duplicates} entr{'y' if duplicates == 1 else 'ies'} already "
+                "existed and were skipped.",
+                "warning",
+            )
+        if invalid:
+            flash(
+                f"{invalid} row{'s' if invalid != 1 else ''} were missing a "
+                "username or password and were skipped.",
+                "warning",
+            )
+        return redirect(url_for("dashboard"))
+
+    return render_template("import.html")
 
 
 # ---------------------------------------------------------------------------
